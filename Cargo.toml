@@ -1,0 +1,6 @@
+[workspace]
+
+members = [
+    "readbook/guessing_game",
+    "readbook/minigrep"
+]
