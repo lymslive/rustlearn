@@ -2,5 +2,7 @@
 
 members = [
     "readbook/guessing_game",
-    "readbook/minigrep"
+    "readbook/minigrep",
+    "readbook/webhello",
+    "readbook/grrs",
 ]
