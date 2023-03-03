@@ -5,4 +5,5 @@ members = [
     "readbook/minigrep",
     "readbook/webhello",
     "readbook/grrs",
+    "uselib/mangen",
 ]

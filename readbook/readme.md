@@ -23,3 +23,6 @@ build.rs 生成 man 测试失败。
 ```
 warning: Error finalizing incremental compilation session directory `/home/tanshuil/github/lymslive/rustlearn/target/debug/incremental/wordcount-1wr6k6wgzfdx8/s-giqg7doiu4-19fm8mb-working`: Permission denied (os error 13)
 ```
+
+但似乎也写成了 head.1 文件在某个深层目录：
+../target/debug/build/grrs-d92e0865e964235b/out/head.1
