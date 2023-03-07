@@ -6,4 +6,5 @@ members = [
     "readbook/webhello",
     "readbook/grrs",
     "uselib/mangen",
+    "worktoml/tomloper",
 ]
