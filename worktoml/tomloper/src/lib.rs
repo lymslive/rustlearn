@@ -5,7 +5,7 @@ use std::ops::BitOr;
 
 /// Resolve path into a `toml::Value` tree.
 /// Return `None` if the path if invalid.
-/// Note the input is aslo `Option`, for implement detail reason.
+/// Note the input is aslo `Option`, for symmetrical implementation reason.
 fn path<'tr, B>(v: Option<&'tr Value>, p: B) -> Option<&'tr Value>
 where B: PathBuilder + Index + Copy
 {
@@ -87,7 +87,7 @@ impl PathBuilder for &str {
 impl PathBuilder for usize {}
 
 /// Adopter for `toml::Value` to use operator overload. 
-trait PathOperator {
+pub trait PathOperator {
     fn path<'tr>(&'tr self) -> TomlOpt<'tr>;
     fn pathto<'tr>(&'tr self, p: &str) -> TomlOpt<'tr>;
 }
