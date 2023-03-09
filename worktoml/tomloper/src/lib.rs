@@ -6,7 +6,7 @@ use std::ops::BitOr;
 /// Resolve path into a `toml::Value` tree.
 /// Return `None` if the path if invalid.
 /// Note the input is aslo `Option`, for implement detail reason.
-fn path<'a, B>(v: Option<&'a Value>, p: B) -> Option<&'a Value>
+fn path<'tr, B>(v: Option<&'tr Value>, p: B) -> Option<&'tr Value>
 where B: PathBuilder + Index + Copy
 {
     if v.is_none() {
@@ -45,7 +45,7 @@ struct PathSegment {
 }
 
 impl PathSegment {
-    fn apply<'a>(&self, v: &'a Value) -> Option<&'a Value> {
+    fn apply<'tr>(&self, v: &'tr Value) -> Option<&'tr Value> {
         let mut target = Some(v);
         for p in &self.paths {
             if target.is_none() {
@@ -88,17 +88,15 @@ impl PathBuilder for usize {}
 
 /// Adopter for `toml::Value` to use operator overload. 
 trait PathOperator {
-    type Output<'a> where Self: 'a;
-    fn path<'a>(&'a self) -> Self::Output<'a>;
-    fn pathto<'a>(&'a self, p: &str) -> Self::Output<'a>;
+    fn path<'tr>(&'tr self) -> TomlOpt<'tr>;
+    fn pathto<'tr>(&'tr self, p: &str) -> TomlOpt<'tr>;
 }
 
 impl PathOperator for Value {
-    type Output<'a> = TomlOpt<'a>;
-    fn path<'a>(&'a self) -> Self::Output<'a> {
+    fn path<'tr>(&'tr self) -> TomlOpt<'tr> {
         TomlOpt::path(self)
     }
-    fn pathto<'a>(&'a self, p: &str) -> Self::Output<'a> {
+    fn pathto<'tr>(&'tr self, p: &str) -> TomlOpt<'tr> {
         let valop = p.build_path().apply(self);
         TomlOpt { valop }
     }
@@ -107,24 +105,24 @@ impl PathOperator for Value {
 /// Wrapper of `toml::Value` for operator overload.
 /// Must reference an existed toml tree, `Option::None` to refer non-exist node.
 #[derive(Copy, Clone)]
-pub struct TomlOpt<'a> {
-    valop: Option<&'a Value>,
+pub struct TomlOpt<'tr> {
+    valop: Option<&'tr Value>,
 }
 
-impl<'a> TomlOpt<'a> {
+impl<'tr> TomlOpt<'tr> {
     /// As constructor, to build path operand object from a `toml::Value` node.
-    pub fn path(v: &'a Value) -> Self {
+    pub fn path(v: &'tr Value) -> Self {
         Self { valop: Some(v) }
     }
     
     /// As unwrapper, to get the underling `Option<&toml::Value>`.
-    pub fn unpath(&self) -> Option<&'a Value> {
+    pub fn unpath(&self) -> Option<&'tr Value> {
         self.valop
     }
 }
 
 /// path operator, visit toml tree by string key for table or index for array.
-impl<'a, Rhs> Div<Rhs> for TomlOpt<'a>
+impl<'tr, Rhs> Div<Rhs> for TomlOpt<'tr>
 where Rhs: PathBuilder + Index + Copy
 {
     type Output = Self;
@@ -142,7 +140,7 @@ where Rhs: PathBuilder + Index + Copy
 /// Note: pipe operator(|) is the vertical form of path operator(/),
 /// and usually stand on the end of path chain.
 /// eg. `let scalar = toml.path() / "path" / "to" / "leaf" | "default-value"; `
-impl<'a> BitOr<String> for TomlOpt<'a>
+impl<'tr> BitOr<String> for TomlOpt<'tr>
 {
     type Output = String;
 
@@ -157,9 +155,9 @@ impl<'a> BitOr<String> for TomlOpt<'a>
     }
 }
 
-impl<'a> BitOr<&'static str> for TomlOpt<'a>
+impl<'tr> BitOr<&'static str> for TomlOpt<'tr>
 {
-    type Output = &'a str;
+    type Output = &'tr str;
 
     fn bitor(self, rhs: &'static str) -> Self::Output {
         if self.valop.is_none() {
@@ -172,7 +170,7 @@ impl<'a> BitOr<&'static str> for TomlOpt<'a>
     }
 }
 
-impl<'a> BitOr<i64> for TomlOpt<'a>
+impl<'tr> BitOr<i64> for TomlOpt<'tr>
 {
     type Output = i64;
 
@@ -187,7 +185,7 @@ impl<'a> BitOr<i64> for TomlOpt<'a>
     }
 }
 
-impl<'a> BitOr<f64> for TomlOpt<'a>
+impl<'tr> BitOr<f64> for TomlOpt<'tr>
 {
     type Output = f64;
 
@@ -202,7 +200,7 @@ impl<'a> BitOr<f64> for TomlOpt<'a>
     }
 }
 
-impl<'a> BitOr<bool> for TomlOpt<'a>
+impl<'tr> BitOr<bool> for TomlOpt<'tr>
 {
     type Output = bool;
 
