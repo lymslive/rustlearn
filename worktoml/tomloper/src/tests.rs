@@ -2,23 +2,7 @@ use super::*;
 
 fn load_test_toml() -> Value
 {
-    let str_toml = r#"
-ip = "127.0.0.1"
-[host]
-ip = "127.0.1.1"
-port = 8080
-protocol = ["tcp", "udp", "mmp"]
-[[service]]
-name = "serv_1"
-desc = "first server"
-[[service]]
-name = "serv_2"
-desc = "another server"
-[misc]
-int = 1234
-float = 3.14
-bool = true
-"#;
+    let str_toml = include_str!("../examples/sample.toml");
     let v: Value = str_toml.parse().unwrap();
     return v;
 }
@@ -183,3 +167,157 @@ fn pipe_test() {
     assert_eq!(value, 1234);
 }
 
+#[test]
+fn pipe_mut_test() {
+    let mut v = load_test_toml();
+
+    let ip = v.path_mut() / "ip" | "";
+    assert_eq!(ip, "127.0.0.1");
+
+    let ip = v.path_mut() / "host" / "ip" | "";
+    assert_eq!(ip, "127.0.1.1");
+
+    let ip_default = "127";
+    let ip = v.path_mut() / "host" / "ip" | ip_default;
+    assert_eq!(ip, "127.0.1.1");
+
+    let ip_default: String = String::from("127");
+    let ip = v.path_mut() / "host" / "ip" | ip_default;
+    assert_eq!(ip, "127.0.1.1");
+
+    let port = v.path_mut() / "host" / "port" | 0;
+    assert_eq!(port, 8080);
+
+    let port_default = 80;
+    let port = v.path_mut() / "host" / "port" | port_default;
+    assert_eq!(port, 8080);
+    assert_eq!(port_default, 80);
+
+    // can save intermedia tmp value
+    let misc = v.path_mut() / "misc";
+    let value = misc / "int" | 0;
+    assert_eq!(value, 1234);
+
+    let value = v.pathto_mut("/misc.int") | 0;
+    assert_eq!(value, 1234);
+
+    let value = v.path_mut() / "misc" / "float" | 0.0;
+    assert_eq!(value, 3.14);
+    let value = v.path_mut() / "misc" / "bool" | false;
+    assert_eq!(value, true);
+}
+
+#[test]
+fn push_test() {
+    let mut v = load_test_toml();
+
+    let ip = v.path() / "ip" | "";
+    assert_eq!(ip, "127.0.0.1");
+
+    let mut ip_node = v.path_mut() / "ip";
+    let _ = &mut ip_node << "127.0.0.2";
+    let ip = v.path() / "ip" | "";
+    assert_eq!(ip, "127.0.0.2");
+
+    // push mistype value has no effect.
+    let mut ip_node = v.path_mut() / "ip";
+    let _ = &mut ip_node << 127;
+    let ip = v.path() / "ip" | "";
+    assert_eq!(ip, "127.0.0.2");
+
+    // push scalar to leat node with supported type.
+    let mut node = v.path_mut() / "misc" / "int";
+    let _ = &mut node << 4321;
+    let val = v.path() / "misc" / "int" | 0;
+    assert_eq!(val, 4321);
+
+    let mut node = v.path_mut() / "misc" / "float";
+    let _ = &mut node << 31.4;
+    let val = v.path() / "misc" / "float" | 0.0;
+    assert_eq!(val, 31.4);
+
+    let mut node = v.path_mut() / "misc" / "bool";
+    let _ = &mut node << false;
+    let val = v.path() / "misc" / "bool" | true;
+    assert_eq!(val, false);
+
+    // push a item to toml array
+    let mut node = v.path_mut() / "host" / "protocol";
+    let _ = &mut node << ("abc", ) << ("edf", );
+    // enable print by: cargo test -- --nocapture
+    // dbg!(node.unpath());
+    let val = node / 3 | "";
+    assert_eq!(val, "abc");
+
+    // push slice to toml array
+    let mut node = v.path_mut() / "host" / "protocol";
+    let _ = &mut node << &["xyz"][..] << &["ABC", "DEF"][..];
+    let node = v.path() / "host" / "protocol";
+    assert_eq!(node.unpath().unwrap().as_array().unwrap().len(), 8);
+    println!("{}", node.unpath().unwrap());
+
+    // push key-val pair to toml table
+    let mut node = v.path_mut() / "host";
+    let _ = &mut node << ("newkey1", 1) << ("newkey2", "2");
+    let val = v.path() / "host" / "newkey1" | 0;
+    assert_eq!(val, 1);
+    let val = v.path() / "host" / "newkey2" | "";
+    assert_eq!(val, "2");
+
+    // use i32, must cast to i64, because toml integer save i64 
+    let input: i32 = 32;
+    let output_default: i32 = 2;
+    let mut node = v.path_mut() / "misc" / "int";
+    let _ = &mut node << input as i64;
+    let val = v.path() / "misc" / "int" | output_default as i64;
+    assert_eq!(val, input as i64);
+}
+
+#[test]
+fn assign_test() {
+    let mut v = load_test_toml();
+
+    let ip = v.path() / "ip" | "";
+    assert_eq!(ip, "127.0.0.1");
+
+    let mut ip_node = v.path_mut() / "ip";
+    ip_node <<= "127.0.0.2";
+    let ip = v.path() / "ip" | "";
+    assert_eq!(ip, "127.0.0.2");
+
+    // can not assign to expression.
+    // (v.path_mut() / "host" / "ip") <<= "127.0.1.2";
+
+    let ip = v.path() / "host" / "ip" | "";
+    assert_eq!(ip, "127.0.1.1");
+    let mut ip_node = v.path_mut() / "host" / "ip";
+    ip_node <<= 127.0; // type mismatch
+    let ip = v.path() / "host" / "ip" | "";
+    assert_eq!(ip, "");
+    let ip = v.path() / "host" / "ip" | 0.0;
+    assert_eq!(ip, 127.0);
+    let mut ip_node = v.path_mut() / "host" / "ip";
+    ip_node <<= "127.0.1.2";
+    let ip = v.path() / "host" / "ip" | "";
+    assert_eq!(ip, "127.0.1.2");
+
+    // cannot create non-existed node with <<=
+    let mut port_node = v.path_mut() / "port";
+    assert_eq!(port_node.unpath().is_none(), true);
+    port_node <<= 80;
+    assert_eq!(port_node.unpath().is_none(), true);
+
+    // <<= can assign any type that support toml::from() method.
+    let vecint = vec![1, 2, 3, 4];
+    let mut node = v.path_mut() / "misc" / "int";
+    node <<= vecint;
+    let int = v.path() / "misc" / "int" / 0 | 0;
+    assert_eq!(int, 1);
+    let int = v.path() / "misc" / "int" / 1 | 0;
+    assert_eq!(int, 2);
+
+    let mut node = v.path_mut() / "misc" / "int";
+    node.assign(1234);
+    let int = v.path() / "misc" / "int" | 0;
+    assert_eq!(int, 1234);
+}

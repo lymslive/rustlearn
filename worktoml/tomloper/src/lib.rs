@@ -276,6 +276,8 @@ impl<'tr> TomlOptMut<'tr> {
         &self.valop
     }
 
+    /// Assign any supported value to toml.
+    /// But canno overload operator=, will choose <<= instead.
     pub fn assign<T>(&mut self, rhs: T) where Value: From<T> {
         if let Some(ref mut v) = self.valop {
             **v = Value::from(rhs);
