@@ -1,9 +1,57 @@
+//! Implement Toml pointer following the json path syntax, with type `Option<&toml::Value>`.
+//! Overload `/` as path operator to point into a node in toml tree, as well as some other
+//! meaningfull operator overload.
+//! Such as pipe operator `|` to get primitive value from scalar leaf node,
+//! push operator `<<` to overwrite scalar node or push new item to array or table,
+//! and push assign operator `<<=` to re-assign to toml node unconditionally.
+//! While `/` or operator `<<` may invalidate the pointer, we can use `!` operator
+//! or `is_none()` method to test such failed case.
+//! 
+//! # Expample
+//! ```rust
+//! use tomloper::PathOperator;
+//! let tv = r#"
+//! [host]
+//! ip="127.0.0.1"
+//! port=8080
+//! proto=["tcp", "udp"]
+//! "#;
+//! let mut v: toml::Value = tv.parse().unwrap(); 
+//!
+//! let port = v.path() / "host" / "port" | 0;
+//! assert_eq!(port, 8080);
+//!
+//! let mut node = v.path_mut() / "host" / "port";
+//! let _ = &mut node << 8989;
+//! let port = node | 0;
+//! assert_eq!(port, 8989);
+//!
+//! let proto = v.path() / "host" / "proto" / 0 | "";
+//! assert_eq!(proto, "tcp");
+//!
+//! let mut host = v.path_mut() / "host";
+//! let _ = &mut host << ("newkey", "newval") << ("morekey", 1234);
+//! assert_eq!(host.is_none(), false);
+//! assert_eq!(!host, false);
+//!
+//! let mut proto = v.path_mut() / "host" / "proto";
+//! let _ = &mut proto << ("json", ) << ["protobuf"];
+//! assert_eq!(proto.as_ref().unwrap().as_array().unwrap().len(), 4);
+//!
+//! proto <<= "default";
+//! assert_eq!(proto.as_ref().unwrap().is_str(), true);
+//! let proto = v.path() / "host" / "proto" | "";
+//! assert_eq!(proto, "default");
+//!
+//! let invalid = v.path() / "host" / "no-key";
+//! assert_eq!(!invalid, true);
+//! assert_eq!(invalid.is_none(), true);
+//! ```
+//!
+
 use toml::Value;
 use toml::value::Index;
-use std::ops::Div;
-use std::ops::BitOr;
-use std::ops::Shl;
-use std::ops::ShlAssign;
+use std::ops::{Div, BitOr, Shl, ShlAssign, Not, Deref, DerefMut};
 
 /// Resolve path into a `toml::Value` tree.
 /// Return `None` if the path if invalid.
@@ -29,6 +77,7 @@ where B: PathBuilder + Index + Copy
     return None;
 }
 
+/// Resolve path into a mutable `toml::Value` tree.
 fn path_mut<'tr, B>(v: Option<&'tr mut Value>, p: B) -> Option<&'tr mut Value>
 where B: PathBuilder + Index + Copy
 {
@@ -55,17 +104,6 @@ where B: PathBuilder + Index + Copy
     }
 }
 
-/// Determin whether a string is all numeric digital.
-/// The numeric path is treated as index of toml array.
-fn is_string_numeric(s: &str) -> bool {
-    for c in s.chars() {
-        if !c.is_numeric() {
-            return false;
-        }
-    }
-    return true;
-}
-
 /// Path segment break on slash(/) or dot(.).
 /// eg: `table.subtable.key` or `table/subtable/key` or `array/index/key`
 struct PathSegment
@@ -75,6 +113,7 @@ struct PathSegment
 
 impl PathSegment
 {
+    /// Resolve path readonly for readonly `toml::Value`.
     fn apply<'tr>(&self, v: &'tr Value) -> Option<&'tr Value> {
         let mut target = Some(v);
         for p in &self.paths {
@@ -84,17 +123,21 @@ impl PathSegment
             if p.is_empty() {
                 continue;
             }
-            else if is_string_numeric(&p) {
-                let index: usize = p.parse().unwrap();
-                target = target.unwrap().get(index);
-            }
-            else {
-                target = target.unwrap().get(p);
+            match target.unwrap() {
+                Value::Table(table) => { target = table.get(p); },
+                Value::Array(array) => {
+                    if let Ok(index) = p.parse::<usize>() {
+                        target = array.get(index); 
+                    }
+                },
+                _ => { return None; }
             }
         }
         return target;
     }
 
+    /// Resolve path readonly for mutable `toml::Value`.
+    /// Bug: if some table key is all numerical char, would mistake as array index.
     fn apply_mut<'tr>(&self, v: &'tr mut Value) -> Option<&'tr mut Value> {
         let mut target = Some(v);
         for p in &self.paths {
@@ -104,18 +147,16 @@ impl PathSegment
             if p.is_empty() {
                 continue;
             }
-            else if is_string_numeric(&p) {
-                let index: usize = p.parse().unwrap();
-                target = target.unwrap().get_mut(index);
-            }
-            else {
-                target = target.unwrap().get_mut(p);
+            match p.parse::<usize>() {
+                Ok(index) => { target = target.unwrap().get_mut(index); },
+                Err(_) => { target = target.unwrap().get_mut(p); },
             }
         }
         return target;
     }
 }
 
+/// Type trait that can build `PathSegment` from.
 trait PathBuilder {
     fn build_path(&self) -> PathSegment {
         PathSegment { paths: Vec::new() }
@@ -136,72 +177,101 @@ impl PathBuilder for &str {
 /// usize index only act path on it's own, but cannot split to more path segment.
 impl PathBuilder for usize {}
 
-/// Adopter for `toml::Value` to use operator overload. 
+/// Provide toml pointer to supported operator overload.
 pub trait PathOperator
 {
-    fn path<'tr>(&'tr self) -> TomlOpt<'tr>;
-    fn pathto<'tr>(&'tr self, p: &str) -> TomlOpt<'tr>;
+    /// Construct immutable toml pointer to some initial node.
+    fn path<'tr>(&'tr self) -> TomlPtr<'tr>;
 
-    fn path_mut<'tr>(&'tr mut self) -> TomlOptMut<'tr>;
-    fn pathto_mut<'tr>(&'tr mut self, p: &str) -> TomlOptMut<'tr>;
+    /// Construct immutable toml pointer and move it follwoing sub path.
+    fn pathto<'tr>(&'tr self, p: &str) -> TomlPtr<'tr>;
+
+    /// Construct mutable toml pointer to some initial node.
+    fn path_mut<'tr>(&'tr mut self) -> TomlPtrMut<'tr>;
+
+    /// Construct mutable toml pointer and move it follwoing sub path.
+    fn pathto_mut<'tr>(&'tr mut self, p: &str) -> TomlPtrMut<'tr>;
 }
 
+/// Create toml pointer directely from `toml::Value`.
 impl PathOperator for Value
 {
-    fn path<'tr>(&'tr self) -> TomlOpt<'tr> {
-        TomlOpt::path(self)
+    fn path<'tr>(&'tr self) -> TomlPtr<'tr> {
+        TomlPtr::path(self)
     }
-    fn pathto<'tr>(&'tr self, p: &str) -> TomlOpt<'tr> {
+    fn pathto<'tr>(&'tr self, p: &str) -> TomlPtr<'tr> {
         let valop = p.build_path().apply(self);
-        TomlOpt { valop }
+        TomlPtr { valop }
     }
 
-    fn path_mut<'tr>(&'tr mut self) -> TomlOptMut<'tr> {
-        TomlOptMut::path(self)
+    fn path_mut<'tr>(&'tr mut self) -> TomlPtrMut<'tr> {
+        TomlPtrMut::path(self)
     }
-    fn pathto_mut<'tr>(&'tr mut self, p: &str) -> TomlOptMut<'tr> {
+    fn pathto_mut<'tr>(&'tr mut self, p: &str) -> TomlPtrMut<'tr> {
         let valop = p.build_path().apply_mut(self);
-        TomlOptMut { valop }
+        TomlPtrMut { valop }
     }
 }
 
-/// Wrapper of `toml::Value` for operator overload.
-/// Must reference an existed toml tree, `Option::None` to refer non-exist node.
+/// Wrapper pointer to `toml::Value` for operator overload.
+/// Must refer to an existed toml tree, `Option::None` to refer non-exist node.
 #[derive(Copy, Clone)]
-pub struct TomlOpt<'tr> {
+pub struct TomlPtr<'tr> {
     valop: Option<&'tr Value>,
 }
 
-impl<'tr> TomlOpt<'tr> {
+impl<'tr> TomlPtr<'tr> {
     /// As constructor, to build path operand object from a `toml::Value` node.
     pub fn path(v: &'tr Value) -> Self {
         Self { valop: Some(v) }
     }
     
     /// As unwrapper, to get the underling `Option<&toml::Value>`.
-    pub fn unpath(&self) -> Option<&'tr Value> {
-        self.valop
+    pub fn unpath(&self) -> &Option<&'tr Value> {
+        &self.valop
     }
 }
 
-/// path operator, visit toml tree by string key for table or index for array.
-impl<'tr, Rhs> Div<Rhs> for TomlOpt<'tr>
+/// Overload `!` operator to test the pointer is invalid.
+impl<'tr> Not for TomlPtr<'tr> {
+    type Output = bool;
+    fn not(self) -> Self::Output {
+        self.valop.is_none()
+    }
+}
+
+/// Overload `*` deref operator to treate pointer as `Option<&toml::Value>`.
+impl<'tr> Deref for TomlPtr<'tr>
+{
+    type Target = Option<&'tr Value>;
+    fn deref(&self) -> &Self::Target {
+        self.unpath()
+    }
+}
+
+/// Path operator `/`, visit sub-node by string key for table or index for array.
+/// Can chained as `tomlptr / "path" / "to" / "node"` or `tomlptr / "path/to/node"`.
+impl<'tr, Rhs> Div<Rhs> for TomlPtr<'tr>
 where Rhs: PathBuilder + Index + Copy
 {
     type Output = Self;
     fn div(self, rhs: Rhs) -> Self::Output {
-        TomlOpt { valop: path(self.valop, rhs) }
+        TomlPtr { valop: path(self.valop, rhs) }
     }
 }
 
-/// pipe operator, get primitive scalar value for leaf node in toml tree.
-/// return rhs as default if the node is mistype.
-/// support | &str, String, i64, f64, bool,
-/// not support datetime type of toml.
-/// Note: pipe operator(|) is the vertical form of path operator(/),
-/// and usually stand on the end of path chain.
-/// eg. `let scalar = toml.path() / "path" / "to" / "leaf" | "default-value"; `
-impl<'tr> BitOr<String> for TomlOpt<'tr>
+// pipe operator, get primitive scalar value for leaf node in toml tree.
+// return rhs as default if the node is mistype.
+// support | &str, String, i64, f64, bool,
+// not support datetime type of toml.
+// Note: pipe operator(|) is the vertical form of path operator(/),
+// and usually stand on the end of path chain.
+// eg. `let scalar = toml.path() / "path" / "to" / "leaf" | "default-value"; `
+
+/// Pipe operator `|` with `String`, to get value from string node, 
+/// or return `rhs` as default value if pointer is invalid or type mistach.
+/// Note that the `rhs` string would be moved.
+impl<'tr> BitOr<String> for TomlPtr<'tr>
 {
     type Output = String;
     fn bitor(self, rhs: String) -> Self::Output {
@@ -215,7 +285,8 @@ impl<'tr> BitOr<String> for TomlOpt<'tr>
     }
 }
 
-impl<'tr> BitOr<&'static str> for TomlOpt<'tr>
+/// Pipe operator `|` with string literal, to get string value or `rhs` as default.
+impl<'tr> BitOr<&'static str> for TomlPtr<'tr>
 {
     type Output = &'tr str;
     fn bitor(self, rhs: &'static str) -> Self::Output {
@@ -226,7 +297,8 @@ impl<'tr> BitOr<&'static str> for TomlOpt<'tr>
     }
 }
 
-impl<'tr> BitOr<i64> for TomlOpt<'tr>
+/// Pipe operator to get integer value or `rhs` as default.
+impl<'tr> BitOr<i64> for TomlPtr<'tr>
 {
     type Output = i64;
     fn bitor(self, rhs: i64) -> Self::Output {
@@ -237,7 +309,8 @@ impl<'tr> BitOr<i64> for TomlOpt<'tr>
     }
 }
 
-impl<'tr> BitOr<f64> for TomlOpt<'tr>
+/// Pipe operator to get float value or `rhs` as default.
+impl<'tr> BitOr<f64> for TomlPtr<'tr>
 {
     type Output = f64;
     fn bitor(self, rhs: f64) -> Self::Output {
@@ -248,7 +321,8 @@ impl<'tr> BitOr<f64> for TomlOpt<'tr>
     }
 }
 
-impl<'tr> BitOr<bool> for TomlOpt<'tr>
+/// Pipe operator to get bool value or `rhs` as default.
+impl<'tr> BitOr<bool> for TomlPtr<'tr>
 {
     type Output = bool;
     fn bitor(self, rhs: bool) -> Self::Output {
@@ -259,13 +333,14 @@ impl<'tr> BitOr<bool> for TomlOpt<'tr>
     }
 }
 
-/// Mutable version of wrapper of `toml::Value` for operator overload.
-/// Must reference an existed toml tree, `Option::None` to refer non-exist node.
-pub struct TomlOptMut<'tr> {
+/// Mutable version of pointer wrapper of `toml::Value` for operator overload.
+/// Must refer to existed toml tree, `Option::None` to refer non-exist node.
+/// Note that mutable reference don't support copy.
+pub struct TomlPtrMut<'tr> {
     valop: Option<&'tr mut Value>,
 }
 
-impl<'tr> TomlOptMut<'tr> {
+impl<'tr> TomlPtrMut<'tr> {
     /// As constructor, to build path operand object from a `toml::Value` node.
     pub fn path(v: &'tr mut Value) -> Self {
         Self { valop: Some(v) }
@@ -285,20 +360,46 @@ impl<'tr> TomlOptMut<'tr> {
     }
 }
 
-/// mutable path operator, hope to change the node it point to.
-impl<'tr, Rhs> Div<Rhs> for TomlOptMut<'tr>
+/// Overload `!` operator to test the pointer is invalid.
+impl<'tr> Not for TomlPtrMut<'tr> {
+    type Output = bool;
+    fn not(self) -> Self::Output {
+        self.valop.is_none()
+    }
+}
+
+/// Overload `*` deref operator to treate pointer as `Option<&mut toml::Value>`.
+impl<'tr> Deref for TomlPtrMut<'tr> {
+    type Target = Option<&'tr mut Value>;
+    fn deref(&self) -> &Self::Target {
+        &self.valop
+    }
+}
+
+/// Overload `*` deref operator to treate pointer as `Option<&mut toml::Value>`.
+impl<'tr> DerefMut for TomlPtrMut<'tr> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.valop
+    }
+}
+
+/// Path operator `/`, visit sub-node by string key for table or index for array.
+/// Can chained as `tomlptr / "path" / "to" / "node"` or `tomlptr / "path/to/node"`.
+/// Hope to change the node it point to.
+impl<'tr, Rhs> Div<Rhs> for TomlPtrMut<'tr>
 where Rhs: PathBuilder + Index + Copy
 {
     type Output = Self;
 
     fn div(self, rhs: Rhs) -> Self::Output {
-        TomlOptMut { valop: path_mut(self.valop, rhs) }
+        TomlPtrMut { valop: path_mut(self.valop, rhs) }
     }
 }
 
-/// pipe operator for TomlOptMut version.
-/// todo: refactor the repeat.
-impl<'tr> BitOr<String> for TomlOptMut<'tr>
+/// Pipe operator `|` with `String`, to get value from string node, 
+/// or return `rhs` as default value if pointer is invalid or type mistach.
+/// Note that the `rhs` string , as well as the pointer itself would be moved.
+impl<'tr> BitOr<String> for TomlPtrMut<'tr>
 {
     type Output = String;
     fn bitor(self, rhs: String) -> Self::Output {
@@ -312,7 +413,8 @@ impl<'tr> BitOr<String> for TomlOptMut<'tr>
     }
 }
 
-impl<'tr> BitOr<&'static str> for TomlOptMut<'tr>
+/// Pipe operator `|` with string literal, to get string value or `rhs` as default.
+impl<'tr> BitOr<&'static str> for TomlPtrMut<'tr>
 {
     type Output = &'tr str;
     fn bitor(self, rhs: &'static str) -> Self::Output {
@@ -323,7 +425,8 @@ impl<'tr> BitOr<&'static str> for TomlOptMut<'tr>
     }
 }
 
-impl<'tr> BitOr<i64> for TomlOptMut<'tr>
+/// Pipe operator to get integer value or `rhs` as default.
+impl<'tr> BitOr<i64> for TomlPtrMut<'tr>
 {
     type Output = i64;
     fn bitor(self, rhs: i64) -> Self::Output {
@@ -334,7 +437,8 @@ impl<'tr> BitOr<i64> for TomlOptMut<'tr>
     }
 }
 
-impl<'tr> BitOr<f64> for TomlOptMut<'tr>
+/// Pipe operator to get float value or `rhs` as default.
+impl<'tr> BitOr<f64> for TomlPtrMut<'tr>
 {
     type Output = f64;
     fn bitor(self, rhs: f64) -> Self::Output {
@@ -345,7 +449,8 @@ impl<'tr> BitOr<f64> for TomlOptMut<'tr>
     }
 }
 
-impl<'tr> BitOr<bool> for TomlOptMut<'tr>
+/// Pipe operator to get bool value or `rhs` as default.
+impl<'tr> BitOr<bool> for TomlPtrMut<'tr>
 {
     type Output = bool;
     fn bitor(self, rhs: bool) -> Self::Output {
@@ -356,74 +461,143 @@ impl<'tr> BitOr<bool> for TomlOptMut<'tr>
     }
 }
 
-/// operator << to put a value into toml leaf node, which data type must match.
-impl<'tr> Shl<&str> for &mut TomlOptMut<'tr>
+/// Operator `<<` to put a string into toml leaf node.
+/// While the data type mismatch the node, set self pointer to `None`.
+impl<'tr> Shl<&str> for &mut TomlPtrMut<'tr>
 {
     type Output = Self;
     fn shl(self, rhs: &str) -> Self::Output {
         if let Some(ref mut v) = self.valop {
             if v.is_str() {
                 **v = Value::String(rhs.to_string());
+            } else {
+                self.valop = None;
             }
         }
         self
     }
 }
 
-impl<'tr> Shl<String> for &mut TomlOptMut<'tr>
+/// Operator `<<` to put and move a string into toml leaf node.
+/// While the data type mismatch the node, set self pointer to `None`.
+impl<'tr> Shl<String> for &mut TomlPtrMut<'tr>
 {
     type Output = Self;
     fn shl(self, rhs: String) -> Self::Output {
         if let Some(ref mut v) = self.valop {
             if v.is_str() {
                 **v = Value::String(rhs);
+            } else {
+                self.valop = None;
             }
         }
         self
     }
 }
 
-impl<'tr> Shl<i64> for &mut TomlOptMut<'tr>
+/// Operator `<<` to put a integer value into toml leaf node.
+/// While the data type mismatch the node, set self pointer to `None`.
+impl<'tr> Shl<i64> for &mut TomlPtrMut<'tr>
 {
     type Output = Self;
     fn shl(self, rhs: i64) -> Self::Output {
         if let Some(ref mut v) = self.valop {
             if v.is_integer() {
                 **v = Value::Integer(rhs);
+            } else {
+                self.valop = None;
             }
         }
         self
     }
 }
 
-impl<'tr> Shl<f64> for &mut TomlOptMut<'tr>
+/// Operator `<<` to put a float value into toml leaf node.
+/// While the data type mismatch the node, set self pointer to `None`.
+impl<'tr> Shl<f64> for &mut TomlPtrMut<'tr>
 {
     type Output = Self;
     fn shl(self, rhs: f64) -> Self::Output {
         if let Some(ref mut v) = self.valop {
             if v.is_float() {
                 **v = Value::Float(rhs);
+            } else {
+                self.valop = None;
             }
         }
         self
     }
 }
 
-impl<'tr> Shl<bool> for &mut TomlOptMut<'tr>
+/// Operator `<<` to put a bool value into toml leaf node.
+/// While the data type mismatch the node, set self pointer to `None`.
+impl<'tr> Shl<bool> for &mut TomlPtrMut<'tr>
 {
     type Output = Self;
     fn shl(self, rhs: bool) -> Self::Output {
         if let Some(ref mut v) = self.valop {
             if v.is_bool() {
                 **v = Value::Boolean(rhs);
+            } else {
+                self.valop = None;
             }
         }
         self
     }
 }
 
-/// operator: toml/array/node << [v1, v2, v3, ...]
-impl<'tr, T: Copy> Shl<&[T]> for &mut TomlOptMut<'tr> where Value: From<T>
+/// Operator `<<` to push key-value pair (tuple) into toml table.
+/// eg: `toml/table/node << (k, v)` where the k v will be moved.
+impl<'tr, K: ToString, T> Shl<(K, T)> for &mut TomlPtrMut<'tr> where Value: From<T>
+{
+    type Output = Self;
+    fn shl(self, rhs: (K, T)) -> Self::Output {
+        if let Some(ref mut v) = self.valop {
+            match v {
+                Value::Table(table) => { table.insert(rhs.0.to_string(), Value::from(rhs.1)); },
+                _ => {}
+            }
+        }
+        self
+    }
+}
+
+/// Operator `<<` to push one value tuple into toml array.
+/// eg: `toml/array/node << (v,)`.
+/// Note that use single tuple to distinguish with pushing scalar to leaf node.
+impl<'tr, T> Shl<(T,)> for &mut TomlPtrMut<'tr> where Value: From<T>
+{
+    type Output = Self;
+    fn shl(self, rhs: (T,)) -> Self::Output {
+        if let Some(ref mut v) = self.valop {
+            match v {
+                Value::Array(arr) => { arr.push(Value::from(rhs.0)); },
+                _ => {}
+            }
+        }
+        self
+    }
+}
+
+/// Operator `<<` to push one item to toml array.
+/// eg: `toml/array/node << [v1]`
+impl<'tr, T: Copy> Shl<[T;1]> for &mut TomlPtrMut<'tr> where Value: From<T>
+{
+    type Output = Self;
+    fn shl(self, rhs: [T;1]) -> Self::Output {
+        if let Some(ref mut v) = self.valop {
+            match v {
+                Value::Array(arr) => { arr.push(Value::from(rhs[0])); },
+                _ => {}
+            }
+        }
+        self
+    }
+}
+
+/// Operator `<<` to push a slice to toml array.
+/// eg: `toml/array/node << &[v1, v2, v3, ...][..]`
+impl<'tr, T: Copy> Shl<&[T]> for &mut TomlPtrMut<'tr> where Value: From<T>
 {
     type Output = Self;
     fn shl(self, rhs: &[T]) -> Self::Output {
@@ -439,42 +613,9 @@ impl<'tr, T: Copy> Shl<&[T]> for &mut TomlOptMut<'tr> where Value: From<T>
     }
 }
 
-/// operator << to push one value tuple into toml array, eg:
-/// `toml/array/node << (v,)`
-/// use single tuple to distinguish push scalar to leaf node.
-impl<'tr, T> Shl<(T,)> for &mut TomlOptMut<'tr> where Value: From<T>
-{
-    type Output = Self;
-    fn shl(self, rhs: (T,)) -> Self::Output {
-        if let Some(ref mut v) = self.valop {
-            match v {
-                Value::Array(arr) => { arr.push(Value::from(rhs.0)); },
-                _ => {}
-            }
-        }
-        self
-    }
-}
-
-/// operator << to push key-value pair (tuple) into toml array, eg:
-/// `toml/table/node << (k, v)`
-impl<'tr, K: ToString, T> Shl<(K, T)> for &mut TomlOptMut<'tr> where Value: From<T>
-{
-    type Output = Self;
-    fn shl(self, rhs: (K, T)) -> Self::Output {
-        if let Some(ref mut v) = self.valop {
-            match v {
-                Value::Table(table) => { table.insert(rhs.0.to_string(), Value::from(rhs.1)); },
-                _ => {}
-            }
-        }
-        self
-    }
-}
-
-/// operator <<= re-assign to an node unconditionally, may change it data type.
-/// donot use chained <<= because it is right associated.
-impl<'tr, T> ShlAssign<T> for TomlOptMut<'tr> where Value: From<T> 
+/// Operator `<<=` re-assign to an node unconditionally, may change it data type.
+/// Note donot use chained `<<=` as `<<` can because `<<=` is right associated.
+impl<'tr, T> ShlAssign<T> for TomlPtrMut<'tr> where Value: From<T> 
 {
     fn shl_assign(&mut self, rhs: T) {
         self.assign(rhs);

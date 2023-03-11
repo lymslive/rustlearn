@@ -13,14 +13,14 @@ fn path_test() {
     assert_eq!(path(Some(&v), "ip").unwrap().as_str(), Some("127.0.0.1"));
     assert_eq!(v["ip"].as_str(), Some("127.0.0.1"));
 
-    let op = TomlOpt::path(&v);
+    let op = TomlPtr::path(&v);
     let ip = op / "ip";
     assert_eq!(ip.valop.unwrap().as_str(), Some("127.0.0.1"));
 
     let ip = op / "host" / "ip";
     assert_eq!(ip.valop.unwrap().as_str(), Some("127.0.1.1"));
 
-    let host = TomlOpt::path(&v) / "host";
+    let host = TomlPtr::path(&v) / "host";
     let ip = host / "ip";
     assert_eq!(ip.valop.unwrap().as_str(), Some("127.0.1.1"));
     let port = host / "port";
@@ -35,8 +35,8 @@ fn path_test() {
     let proto = v.path() / "host/protocol/2";
     assert_eq!(proto.unpath().unwrap().as_str(), Some("mmp"));
 
-    let proto = v.pathto("/host/protocol/2").unpath();
-    assert_eq!(proto.unwrap().as_str(), Some("mmp"));
+    let proto = v.pathto("/host/protocol/2");
+    assert_eq!(proto.unpath().unwrap().as_str(), Some("mmp"));
 
     let server = v.path() / "service" / 0 / "name";
     assert_eq!(server.unpath().unwrap().as_str(), Some("serv_1"));
@@ -57,11 +57,14 @@ fn path_none_test() {
 
     let root = v.path();
     assert_eq!(root.unpath().is_none(), false);
+    assert_eq!(!root, false);
 
     let node = root / "ip";
     assert_eq!(node.unpath().is_none(), false);
+    assert_eq!(!node, false);
     let node = root / "IP";
     assert_eq!(node.unpath().is_none(), true);
+    assert_eq!(!node, true);
 
     let node = root / "host" /"protocol";
     assert_eq!(node.unpath().is_none(), false);
@@ -78,6 +81,36 @@ fn path_none_test() {
     assert_eq!(node.unpath().is_none(), false);
     let node = root / "service" / 2;
     assert_eq!(node.unpath().is_none(), true);
+}
+
+
+#[test]
+fn path_mut_test() {
+    let mut v = load_test_toml();
+
+    let root = v.path();
+    assert_eq!(root.unpath().is_none(), false);
+    assert_eq!(!root, false);
+
+    let node = root / "ip";
+    assert_eq!(node.unpath().is_none(), false);
+    assert_eq!(!node, false);
+    assert_eq!(!!node, true);
+    assert_eq!(node.is_none(), false);
+
+    let node = root / "IP";
+    assert_eq!(node.unpath().is_none(), true);
+    assert_eq!(!node, true);
+    assert_eq!((*node).is_none(), true);
+
+    let node = v.path_mut() / "ip";
+    assert_eq!(node.unpath().is_none(), false);
+    assert_eq!(!node, false);
+
+    let node = v.path_mut() / "IP";
+    assert_eq!(node.unpath().is_none(), true);
+    assert_eq!(node.is_none(), true);
+    assert_eq!(!node, true);
 }
 
 #[test]
@@ -112,6 +145,15 @@ fn path_build_test() {
 
     let pseg = "path/to.leaf/".build_path();
     assert_eq!(pseg.paths, vec!["path", "to", "leaf", ""]);
+
+    let path = "34ab";
+    let index = path.parse::<usize>();
+    assert_eq!(index.is_ok(), false);
+
+    let path = "34";
+    let index = path.parse::<usize>();
+    assert_eq!(index.is_ok(), true);
+    assert_eq!(index, Ok(34));
 }
 
 #[test]
@@ -243,11 +285,13 @@ fn push_test() {
 
     // push a item to toml array
     let mut node = v.path_mut() / "host" / "protocol";
-    let _ = &mut node << ("abc", ) << ("edf", );
+    let _ = &mut node << ("abc", ) << ["edf"];
     // enable print by: cargo test -- --nocapture
     // dbg!(node.unpath());
     let val = node / 3 | "";
     assert_eq!(val, "abc");
+    let val = v.path() / "host" / "protocol" / 4 | "";
+    assert_eq!(val, "edf");
 
     // push slice to toml array
     let mut node = v.path_mut() / "host" / "protocol";
@@ -321,3 +365,51 @@ fn assign_test() {
     let int = v.path() / "misc" / "int" | 0;
     assert_eq!(int, 1234);
 }
+
+#[test]
+fn path_if_test() {
+    let mut v = load_test_toml();
+
+    let node = v.path() / "ip";
+    if node.is_some() {
+        let ip = node | "";
+        assert_eq!(ip, "127.0.0.1");
+    }
+    if !!node {
+        let ip = node | "";
+        assert_eq!(ip, "127.0.0.1");
+    }
+
+    let node = v.path() / "IP";
+    if node.is_none() {
+        let ip = node | "";
+        assert_eq!(ip, "");
+    }
+    if !node {
+        let ip = node | "";
+        assert_eq!(ip, "");
+    }
+
+    let node = v.path_mut() / "ip";
+    // in mut version operator !node would move self
+    if node.is_some() {
+        let ip = node | "";
+        assert_eq!(ip, "127.0.0.1");
+    }
+
+    let mut node = v.path_mut() / "ip";
+    if !node.is_none() {
+        let _ = &mut node << "127.0.0.2";
+        let ip = node | "";
+        assert_eq!(ip, "127.0.0.2");
+    }
+
+    let mut node = v.path_mut() / "host" / "port";
+    if !node.is_none() {
+        let _ = &mut node << "127.0.0.2";
+        assert_eq!(node.is_none(), true);
+        let val = node | 0;
+        assert_eq!(val, 0);
+    }
+}
+
