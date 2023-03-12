@@ -256,36 +256,45 @@ fn push_test() {
     let ip = v.path() / "ip" | "";
     assert_eq!(ip, "127.0.0.1");
 
-    let mut ip_node = v.path_mut() / "ip";
-    let _ = &mut ip_node << "127.0.0.2";
+    let ip_node = v.path_mut() / "ip" << "127.0.0.2";
+    let ip = ip_node | "";
+    assert_eq!(ip, "127.0.0.2");
     let ip = v.path() / "ip" | "";
     assert_eq!(ip, "127.0.0.2");
 
     // push mistype value has no effect.
-    let mut ip_node = v.path_mut() / "ip";
-    let _ = &mut ip_node << 127;
+    let ip_node = v.path_mut() / "ip";
+    let ip_node = ip_node << 127;
+    assert_eq!(ip_node.is_none(), true);
     let ip = v.path() / "ip" | "";
     assert_eq!(ip, "127.0.0.2");
 
     // push scalar to leat node with supported type.
-    let mut node = v.path_mut() / "misc" / "int";
-    let _ = &mut node << 4321;
-    let val = v.path() / "misc" / "int" | 0;
-    assert_eq!(val, 4321);
+    let node = v.path_mut() / "misc" / "int" << 4242;
+    let val = node | 0;
+    assert_eq!(val, 4242);
 
-    let mut node = v.path_mut() / "misc" / "float";
-    let _ = &mut node << 31.4;
+    let node = v.path_mut() / "misc" / "float";
+    let _ = node << 31.4;
     let val = v.path() / "misc" / "float" | 0.0;
     assert_eq!(val, 31.4);
 
-    let mut node = v.path_mut() / "misc" / "bool";
-    let _ = &mut node << false;
+    let node = v.path_mut() / "misc" / "float";
+    let node = node << 3142;
+    assert_eq!(node.is_none(), true);
+    let val = node | 0.0;
+    assert_eq!(val, 0.0);
+    let val = v.path() / "misc" / "float" | 0.0;
+    assert_eq!(val, 31.4);
+
+    let node = v.path_mut() / "misc" / "bool";
+    let _ = node << false;
     let val = v.path() / "misc" / "bool" | true;
     assert_eq!(val, false);
 
     // push a item to toml array
-    let mut node = v.path_mut() / "host" / "protocol";
-    let _ = &mut node << ("abc", ) << ["edf"];
+    let node = v.path_mut() / "host" / "protocol";
+    let node = node << ("abc", ) << ["edf"];
     // enable print by: cargo test -- --nocapture
     // dbg!(node.unpath());
     let val = node / 3 | "";
@@ -294,15 +303,15 @@ fn push_test() {
     assert_eq!(val, "edf");
 
     // push slice to toml array
-    let mut node = v.path_mut() / "host" / "protocol";
-    let _ = &mut node << &["xyz"][..] << &["ABC", "DEF"][..];
+    let node = v.path_mut() / "host" / "protocol";
+    let _ = node << &["xyz"][..] << &["ABC", "DEF"][..];
     let node = v.path() / "host" / "protocol";
-    assert_eq!(node.unpath().unwrap().as_array().unwrap().len(), 8);
     println!("{}", node.unpath().unwrap());
+    assert_eq!(node.unpath().unwrap().as_array().unwrap().len(), 8);
 
     // push key-val pair to toml table
-    let mut node = v.path_mut() / "host";
-    let _ = &mut node << ("newkey1", 1) << ("newkey2", "2");
+    let node = v.path_mut() / "host";
+    let _ = node << ("newkey1", 1) << ("newkey2", "2");
     let val = v.path() / "host" / "newkey1" | 0;
     assert_eq!(val, 1);
     let val = v.path() / "host" / "newkey2" | "";
@@ -311,8 +320,8 @@ fn push_test() {
     // use i32, must cast to i64, because toml integer save i64 
     let input: i32 = 32;
     let output_default: i32 = 2;
-    let mut node = v.path_mut() / "misc" / "int";
-    let _ = &mut node << input as i64;
+    let node = v.path_mut() / "misc" / "int";
+    let _ = node << input as i64;
     let val = v.path() / "misc" / "int" | output_default as i64;
     assert_eq!(val, input as i64);
 }
@@ -399,14 +408,14 @@ fn path_if_test() {
 
     let mut node = v.path_mut() / "ip";
     if !node.is_none() {
-        let _ = &mut node << "127.0.0.2";
+        node = node << "127.0.0.2";
         let ip = node | "";
         assert_eq!(ip, "127.0.0.2");
     }
 
     let mut node = v.path_mut() / "host" / "port";
     if !node.is_none() {
-        let _ = &mut node << "127.0.0.2";
+        node = node << "127.0.0.2";
         assert_eq!(node.is_none(), true);
         let val = node | 0;
         assert_eq!(val, 0);

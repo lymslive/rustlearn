@@ -21,21 +21,20 @@
 //! let port = v.path() / "host" / "port" | 0;
 //! assert_eq!(port, 8080);
 //!
-//! let mut node = v.path_mut() / "host" / "port";
-//! let _ = &mut node << 8989;
+//! let node = v.path_mut() / "host" / "port" << 8989;
 //! let port = node | 0;
 //! assert_eq!(port, 8989);
 //!
 //! let proto = v.path() / "host" / "proto" / 0 | "";
 //! assert_eq!(proto, "tcp");
 //!
-//! let mut host = v.path_mut() / "host";
-//! let _ = &mut host << ("newkey", "newval") << ("morekey", 1234);
+//! let host = v.path_mut() / "host";
+//! let host = host << ("newkey", "newval") << ("morekey", 1234);
 //! assert_eq!(host.is_none(), false);
 //! assert_eq!(!host, false);
 //!
 //! let mut proto = v.path_mut() / "host" / "proto";
-//! let _ = &mut proto << ("json", ) << ["protobuf"];
+//! proto = proto << ("json", ) << ["protobuf"];
 //! assert_eq!(proto.as_ref().unwrap().as_array().unwrap().len(), 4);
 //!
 //! proto <<= "default";
@@ -358,6 +357,98 @@ impl<'tr> TomlPtrMut<'tr> {
             **v = Value::from(rhs);
         }
     }
+
+    /// Construct new null pointer.
+    fn none() -> Self {
+        Self { valop: None }
+    }
+
+    /// Put a value to toml and return pointer to it.
+    fn put_val<T>(v: &'tr mut Value, rhs: T) -> Self
+    where Value: From<T>
+    {
+        *v = Value::from(rhs);
+        Self::path(v)
+    }
+
+    /// Put value to string toml node pointer, would invalidate it when type mismatch.
+    /// Implement for << String and << &str.
+    fn put_string(&mut self, rhs: String) -> Self {
+        if self.valop.is_none() {
+            return Self::none();
+        }
+        let v = self.valop.take().unwrap();
+        if v.is_str() {
+            return Self::put_val(v, rhs);
+        }
+        return Self::none();
+    }
+
+    /// Implement for << i64.
+    fn put_integer(&mut self, rhs: i64) -> Self {
+        if self.valop.is_none() {
+            return Self::none();
+        }
+        let v = self.valop.take().unwrap();
+        if v.is_integer() {
+            return Self::put_val(v, rhs);
+        }
+        return Self::none();
+    }
+
+    /// Implement for << f64.
+    fn put_float(&mut self, rhs: f64) -> Self {
+        if self.valop.is_none() {
+            return Self::none();
+        }
+        let v = self.valop.take().unwrap();
+        if v.is_float() {
+            return Self::put_val(v, rhs);
+        }
+        return Self::none();
+    }
+
+    /// Implement for << bool.
+    fn put_bool(&mut self, rhs: bool) -> Self {
+        if self.valop.is_none() {
+            return Self::none();
+        }
+        let v = self.valop.take().unwrap();
+        if v.is_bool() {
+            return Self::put_val(v, rhs);
+        }
+        return Self::none();
+    }
+
+    /// Implment for table << (key, val) pair.
+    fn push_table<K: ToString, T>(&mut self, key: K, val: T) -> Self
+    where Value: From<T>
+    {
+        if self.valop.is_none() {
+            return Self::none();
+        }
+        let v = self.valop.take().unwrap();
+        if v.is_table() {
+            v.as_table_mut().unwrap().insert(key.to_string(), Value::from(val));
+            return Self::path(v);
+        }
+        return Self::none();
+    }
+
+    /// Implment for array << (val, ) << [item] .
+    fn push_array<T>(&mut self, val: T) -> Self
+    where Value: From<T>
+    {
+        if self.valop.is_none() {
+            return Self::none();
+        }
+        let v = self.valop.take().unwrap();
+        if v.is_array() {
+            v.as_array_mut().unwrap().push(Value::from(val));
+            return Self::path(v);
+        }
+        return Self::none();
+    }
 }
 
 /// Overload `!` operator to test the pointer is invalid.
@@ -463,151 +554,88 @@ impl<'tr> BitOr<bool> for TomlPtrMut<'tr>
 
 /// Operator `<<` to put a string into toml leaf node.
 /// While the data type mismatch the node, set self pointer to `None`.
-impl<'tr> Shl<&str> for &mut TomlPtrMut<'tr>
-{
+impl<'tr> Shl<&str> for TomlPtrMut<'tr> {
     type Output = Self;
-    fn shl(self, rhs: &str) -> Self::Output {
-        if let Some(ref mut v) = self.valop {
-            if v.is_str() {
-                **v = Value::String(rhs.to_string());
-            } else {
-                self.valop = None;
-            }
-        }
-        self
+    fn shl(mut self, rhs: &str) -> Self::Output {
+        self.put_string(rhs.to_string())
     }
 }
 
 /// Operator `<<` to put and move a string into toml leaf node.
 /// While the data type mismatch the node, set self pointer to `None`.
-impl<'tr> Shl<String> for &mut TomlPtrMut<'tr>
-{
+impl<'tr> Shl<String> for TomlPtrMut<'tr> {
     type Output = Self;
-    fn shl(self, rhs: String) -> Self::Output {
-        if let Some(ref mut v) = self.valop {
-            if v.is_str() {
-                **v = Value::String(rhs);
-            } else {
-                self.valop = None;
-            }
-        }
-        self
+    fn shl(mut self, rhs: String) -> Self::Output {
+        self.put_string(rhs)
     }
 }
 
 /// Operator `<<` to put a integer value into toml leaf node.
 /// While the data type mismatch the node, set self pointer to `None`.
-impl<'tr> Shl<i64> for &mut TomlPtrMut<'tr>
-{
+impl<'tr> Shl<i64> for TomlPtrMut<'tr> {
     type Output = Self;
-    fn shl(self, rhs: i64) -> Self::Output {
-        if let Some(ref mut v) = self.valop {
-            if v.is_integer() {
-                **v = Value::Integer(rhs);
-            } else {
-                self.valop = None;
-            }
-        }
-        self
+    fn shl(mut self, rhs: i64) -> Self::Output {
+        self.put_integer(rhs)
     }
 }
 
 /// Operator `<<` to put a float value into toml leaf node.
 /// While the data type mismatch the node, set self pointer to `None`.
-impl<'tr> Shl<f64> for &mut TomlPtrMut<'tr>
-{
+impl<'tr> Shl<f64> for TomlPtrMut<'tr> {
     type Output = Self;
-    fn shl(self, rhs: f64) -> Self::Output {
-        if let Some(ref mut v) = self.valop {
-            if v.is_float() {
-                **v = Value::Float(rhs);
-            } else {
-                self.valop = None;
-            }
-        }
-        self
+    fn shl(mut self, rhs: f64) -> Self::Output {
+        self.put_float(rhs)
     }
 }
 
 /// Operator `<<` to put a bool value into toml leaf node.
 /// While the data type mismatch the node, set self pointer to `None`.
-impl<'tr> Shl<bool> for &mut TomlPtrMut<'tr>
-{
+impl<'tr> Shl<bool> for TomlPtrMut<'tr> {
     type Output = Self;
-    fn shl(self, rhs: bool) -> Self::Output {
-        if let Some(ref mut v) = self.valop {
-            if v.is_bool() {
-                **v = Value::Boolean(rhs);
-            } else {
-                self.valop = None;
-            }
-        }
-        self
+    fn shl(mut self, rhs: bool) -> Self::Output {
+        self.put_bool(rhs)
     }
 }
 
 /// Operator `<<` to push key-value pair (tuple) into toml table.
 /// eg: `toml/table/node << (k, v)` where the k v will be moved.
-impl<'tr, K: ToString, T> Shl<(K, T)> for &mut TomlPtrMut<'tr> where Value: From<T>
+impl<'tr, K: ToString, T> Shl<(K, T)> for TomlPtrMut<'tr> where Value: From<T>
 {
     type Output = Self;
-    fn shl(self, rhs: (K, T)) -> Self::Output {
-        if let Some(ref mut v) = self.valop {
-            match v {
-                Value::Table(table) => { table.insert(rhs.0.to_string(), Value::from(rhs.1)); },
-                _ => {}
-            }
-        }
-        self
+    fn shl(mut self, rhs: (K, T)) -> Self::Output {
+        self.push_table(rhs.0, rhs.1)
     }
 }
 
 /// Operator `<<` to push one value tuple into toml array.
 /// eg: `toml/array/node << (v,)`.
 /// Note that use single tuple to distinguish with pushing scalar to leaf node.
-impl<'tr, T> Shl<(T,)> for &mut TomlPtrMut<'tr> where Value: From<T>
+impl<'tr, T> Shl<(T,)> for TomlPtrMut<'tr> where Value: From<T>
 {
     type Output = Self;
-    fn shl(self, rhs: (T,)) -> Self::Output {
-        if let Some(ref mut v) = self.valop {
-            match v {
-                Value::Array(arr) => { arr.push(Value::from(rhs.0)); },
-                _ => {}
-            }
-        }
-        self
+    fn shl(mut self, rhs: (T,)) -> Self::Output {
+        self.push_array(rhs.0)
     }
 }
 
 /// Operator `<<` to push one item to toml array.
 /// eg: `toml/array/node << [v1]`
-impl<'tr, T: Copy> Shl<[T;1]> for &mut TomlPtrMut<'tr> where Value: From<T>
+impl<'tr, T: Copy> Shl<[T;1]> for TomlPtrMut<'tr> where Value: From<T>
 {
     type Output = Self;
-    fn shl(self, rhs: [T;1]) -> Self::Output {
-        if let Some(ref mut v) = self.valop {
-            match v {
-                Value::Array(arr) => { arr.push(Value::from(rhs[0])); },
-                _ => {}
-            }
-        }
-        self
+    fn shl(mut self, rhs: [T;1]) -> Self::Output {
+        self.push_array(rhs[0])
     }
 }
 
 /// Operator `<<` to push a slice to toml array.
 /// eg: `toml/array/node << &[v1, v2, v3, ...][..]`
-impl<'tr, T: Copy> Shl<&[T]> for &mut TomlPtrMut<'tr> where Value: From<T>
+impl<'tr, T: Copy> Shl<&[T]> for TomlPtrMut<'tr> where Value: From<T>
 {
     type Output = Self;
-    fn shl(self, rhs: &[T]) -> Self::Output {
-        if let Some(ref mut v) = self.valop {
-            for item in rhs {
-                match v {
-                    Value::Array(arr) => { arr.push(Value::from(*item)); },
-                    _ => {}
-                }
-            }
+    fn shl(mut self, rhs: &[T]) -> Self::Output {
+        for item in rhs {
+            self = self.push_array(*item);
         }
         self
     }
